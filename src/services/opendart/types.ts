@@ -102,3 +102,34 @@ export interface ValuationFinancials {
     previousAmount: string;
   }>;
 }
+
+// ─── 감사의견 ───
+
+export interface DartAuditOpinionItem {
+  rcept_no: string;
+  corp_cls: string;
+  corp_code: string;
+  corp_name: string;
+  bsns_year: string; // 예: "제23기\n(당기)"
+  adtor?: string; // 감사인(회계법인) — "-"는 비감사 관련 레코드
+  adt_opinion?: string; // 감사의견 (예: "적정의견")
+  adt_reprt_spcmnt_matter?: string;
+  emphs_matter?: string; // 강조사항
+  core_adt_matter?: string; // 핵심감사사항
+  stlm_dt: string; // 결산일
+}
+
+export interface DartAuditOpinionResponse {
+  status: string;
+  message: string;
+  list?: DartAuditOpinionItem[];
+}
+
+export interface AuditOpinionInfo {
+  auditor: string | null;
+  opinion: string | null;
+  emphasisMatter: string | null;
+  coreAuditMatter: string | null;
+  settlementDate: string | null;
+  source: string;
+}

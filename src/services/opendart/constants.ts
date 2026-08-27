@@ -5,6 +5,7 @@ export const DART_ENDPOINTS = {
   FINANCIAL_SINGLE: "/fnlttSinglAcnt.json",
   FINANCIAL_FULL: "/fnlttSinglAcntAll.json",
   STOCK_QUANTITY: "/stockTotqySttus.json",
+  AUDIT_OPINION: "/accnutAdtorNmNdAdtOpinion.json",
 } as const;
 
 export const REPORT_CODE: Record<string, string> = {
@@ -60,6 +61,11 @@ export const PRETAX_ACCOUNT_IDS = new Set([
   "ifrs-full_ProfitLossBeforeTax",
 ]);
 
+// 순자산(자본총계)
+export const NET_ASSETS_ACCOUNT_IDS = new Set([
+  "ifrs-full_Equity",
+]);
+
 // ─── 계정명 폴백 (account_id가 "-표준계정코드 미사용-"일 때) ───
 
 export const IBD_CURRENT_PATTERNS = [
@@ -87,6 +93,10 @@ export const NON_CONTROLLING_INTEREST_PATTERNS = [
 
 export const PRETAX_INCOME_PATTERNS = [
   "법인세비용차감전", "법인세차감전",
+];
+
+export const NET_ASSETS_PATTERNS = [
+  "자본총계",
 ];
 
 // ─── valuation 모드 필터링용 (account_id + 이름 둘 다) ───

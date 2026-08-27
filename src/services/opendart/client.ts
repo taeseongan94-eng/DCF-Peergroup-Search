@@ -6,12 +6,14 @@ import {
   IBD_NON_CURRENT_ACCOUNT_IDS,
   NCI_ACCOUNT_IDS,
   PRETAX_ACCOUNT_IDS,
+  NET_ASSETS_ACCOUNT_IDS,
   IBD_CURRENT_PATTERNS,
   IBD_NON_CURRENT_PATTERNS,
   IBD_COMMON_PATTERNS,
   LEASE_LIABILITY_KEYWORD,
   NON_CONTROLLING_INTEREST_PATTERNS,
   PRETAX_INCOME_PATTERNS,
+  NET_ASSETS_PATTERNS,
   VALUATION_ACCOUNT_IDS,
   VALUATION_ACCOUNT_PATTERNS,
   REPORT_CODE_LABEL,
@@ -25,6 +27,8 @@ import type {
   DebtSummary,
   DebtCategory,
   ValuationFinancials,
+  DartAuditOpinionResponse,
+  AuditOpinionInfo,
 } from "./types";
 
 function resolveApiKey(apiKey?: string): string {
@@ -110,6 +114,51 @@ export async function fetchStockQuantity(
   }
 
   return response.data;
+}
+
+// ─── 감사의견 ───
+
+export async function fetchAuditOpinion(
+  corpCode: string,
+  year: string,
+  reportCode: string = "11011",
+  apiKey?: string,
+): Promise<DartAuditOpinionResponse> {
+  const response = await axios.get<DartAuditOpinionResponse>(`${DART_API_BASE}${DART_ENDPOINTS.AUDIT_OPINION}`, {
+    params: {
+      crtfc_key: resolveApiKey(apiKey),
+      corp_code: corpCode,
+      bsns_year: year,
+      reprt_code: reportCode,
+    },
+    timeout: 15000,
+  });
+
+  if (response.data.status !== "000" && response.data.status !== "013") {
+    throw new Error(`DART_ERROR: ${response.data.message} (status: ${response.data.status})`);
+  }
+
+  return response.data;
+}
+
+/**
+ * 감사의견 응답에서 "당기"(해당 사업연도) 레코드만 골라 추출한다.
+ * 응답에는 당기/전기/전전기가 섞여 있고, adt_opinion이 없는 부속 레코드도 있다.
+ */
+export function extractAuditOpinion(response: DartAuditOpinionResponse, reportCode: string): AuditOpinionInfo | null {
+  if (!response.list || response.list.length === 0) return null;
+
+  const current = response.list.find((item) => item.bsns_year.includes("당기") && item.adt_opinion);
+  if (!current) return null;
+
+  return {
+    auditor: current.adtor ?? null,
+    opinion: current.adt_opinion ?? null,
+    emphasisMatter: current.emphs_matter ?? null,
+    coreAuditMatter: current.core_adt_matter ?? null,
+    settlementDate: current.stlm_dt ?? null,
+    source: `OpenDART accnutAdtorNmNdAdtOpinion (${REPORT_CODE_LABEL[reportCode] ?? reportCode})`,
+  };
 }
 
 // ─── 데이터 추출 ───
@@ -265,6 +314,29 @@ export function extractNciAndPretax(items: DartFinancialItem[]): { nonControllin
   }
 
   return { nonControllingInterest, pretaxIncome };
+}
+
+/**
+ * 순자산(자본총계) 추출. 재무상태표(BS)의 "자본총계" 계정 1건.
+ */
+export function extractNetAssets(items: DartFinancialItem[]): number | null {
+  for (const item of items) {
+    if (item.sj_div !== "BS") continue;
+
+    const id = item.account_id ?? "";
+    const name = item.account_nm;
+    const hasStandardId = id !== "" && id !== "-표준계정코드 미사용-";
+
+    const isMatch = hasStandardId
+      ? NET_ASSETS_ACCOUNT_IDS.has(id)
+      : NET_ASSETS_PATTERNS.some((p) => name.includes(p));
+
+    if (isMatch) {
+      const amount = parseInt((item.thstrm_amount ?? "").replace(/[,\s]/g, ""), 10);
+      if (!isNaN(amount)) return amount;
+    }
+  }
+  return null;
 }
 
 /**

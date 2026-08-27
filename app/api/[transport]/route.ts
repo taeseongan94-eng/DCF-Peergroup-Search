@@ -8,6 +8,7 @@ import { registerSearchByIndustryTool } from "@/services/tools/search-by-industr
 import { registerBusinessContentTool } from "@/services/tools/business-content";
 import { registerComputeBetaTool } from "@/services/tools/compute-beta";
 import { registerPeergroupPopulationTool } from "@/services/tools/peergroup-population";
+import { registerAuditReviewTool } from "@/services/tools/audit-review";
 
 const handler = createMcpHandler(
   (server) => {
@@ -34,11 +35,14 @@ const handler = createMcpHandler(
 
     // Peer 모집단 결정론적 조회 (분기말 스냅샷)
     registerPeergroupPopulationTool(server);
+
+    // 감사의견·순자산 (Peer 재무적 타당성 검토용)
+    registerAuditReviewTool(server);
   },
   {},
   {
     basePath: "/api",
-    maxDuration: 60,
+    maxDuration: 120,
     verboseLogs: true,
   }
 );

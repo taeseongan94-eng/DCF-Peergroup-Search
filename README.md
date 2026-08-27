@@ -29,6 +29,7 @@
 | `dart_get_financials` | 분기/반기 보고서, 전체 재무제표, 개별(OFS) 조회 등 특수 케이스 | OpenDART |
 | `compute_beta` | **베타 직접 계산** — KRX 공식 종가 + KOSPI 지수 회귀로 Weekly-2Y/Monthly-5Y 산출. (KICPA/KOSCOM 조회는 영구 장애로 제거됨) | KRX Open API |
 | `naver_get_market_data` | 실시간 주가·시가총액·PER·PBR·컨센서스 목표가·동종업종 기업 | 네이버 금융 |
+| `get_audit_review_data` | **Peer 재무적 타당성 검토용** — 감사의견(감사인/의견/강조사항/핵심감사사항) + 순자산(자본총계) | OpenDART |
 
 👉 **Peer Group 분석 워크플로우**는 [`docs/PEER_GROUP_WORKFLOW.md`](docs/PEER_GROUP_WORKFLOW.md) 참조 — 에이전트가 언제 어떤 도구를 어떤 순서로 호출해야 하는지 정규 시퀀스가 정리되어 있습니다.
 
