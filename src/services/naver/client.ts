@@ -47,36 +47,3 @@ export async function fetchMarketData(stockCode: string): Promise<MarketDataResu
     consensusTargetPrice: data.consensusInfo?.priceTargetMean ?? null,
   };
 }
-
-export async function fetchHistoricalPrices(
-  stockCode: string,
-  startDate: string,
-  endDate: string
-): Promise<Array<{ date: string; close: number }>> {
-  const response = await axios.get<string>(
-    `https://api.finance.naver.com/siseJson.naver`,
-    {
-      params: {
-        symbol: stockCode,
-        requestType: 1,
-        startTime: startDate,
-        endTime: endDate,
-        timeframe: "day",
-      },
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; KicpaBetaMCP/1.0)",
-      },
-      timeout: 15000,
-    }
-  );
-
-  // 응답 형식: [['날짜','시가','고가','저가','종가','거래량','외국인소진율'], ["20260102", 120200, ...], ...]
-  const text = response.data;
-  const lines = text.split("\n").filter((l) => l.trim().startsWith("[\""));
-
-  return lines.map((line) => {
-    const match = line.match(/\["(\d{8})",\s*\d+,\s*\d+,\s*\d+,\s*(\d+)/);
-    if (!match) return null;
-    return { date: match[1], close: parseInt(match[2], 10) };
-  }).filter((item): item is { date: string; close: number } => item !== null);
-}

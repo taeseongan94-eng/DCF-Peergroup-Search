@@ -46,3 +46,17 @@ export const LOOKBACK_DAYS = 5 * 365 + 250;
 
 /** 한 번의 호출에서 처리할 최대 종목 수 (서버리스 타임아웃 방지) */
 export const MAX_COMPUTE_STOCKS = 5;
+
+/**
+ * KRX 앵커 날짜 후보 여유분. 휴장(공휴일 연휴 등)으로 유효 거래일을 못 찾고
+ * 스킵되는 주/월을 보정하기 위해 keepRows보다 넉넉히 요청한다.
+ */
+export const WEEKLY_ANCHOR_BUFFER = 8;
+export const MONTHLY_ANCHOR_BUFFER = 4;
+
+/**
+ * 상하한가(±30%)로는 설명되지 않는 극단적 수익률 임계치. KRX 종가는 수정주가가
+ * 아니라 원본 종가이므로, 액면분할·병합 등 자본거래 이벤트가 있었던 구간은
+ * 하루 새 수익률이 이 값을 넘게 튄다 — 이런 관측치는 회귀에서 제외한다.
+ */
+export const OUTLIER_RETURN_THRESHOLD = 0.5;

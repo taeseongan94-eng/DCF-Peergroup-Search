@@ -18,6 +18,7 @@ import {
 } from "./math";
 import { fetchAdjDaily, fetchKospiDaily } from "./data-source";
 import { fetchMarketData } from "../naver/client";
+import { getStockMarket } from "../common/stock-code-resolver";
 import type { BetaValues, StockBetaResult } from "../kicpa/types";
 
 export interface ComputeBetaParams {
@@ -54,7 +55,8 @@ async function computeOneStock(
     fetchMarketData(stockCode).catch(() => null),
   ]);
 
-  // siseJson 수정주가를 raw/adj 동일 입력으로 사용 → 수정수익률 회귀(검증상 KICPA와 일치).
+  // KRX 종가는 수정주가가 아닌 원본 종가이므로 raw/adj를 동일 입력으로 사용한다.
+  // 액면분할 등으로 인한 극단적 수익률은 math.ts의 이상치 필터(OUTLIER_RETURN_THRESHOLD)가 제외한다.
   const raw = adj;
 
   const result: ComputeBetaStockResult = {
@@ -95,7 +97,7 @@ async function computeOneStock(
 }
 
 /**
- * 네이버 주가 + KOSPI 지수로 베타를 직접 계산한다(KICPA 비의존).
+ * KRX 공식 시세 + KOSPI 지수로 베타를 직접 계산한다(KICPA 비의존).
  * 지수 시리즈는 한 번만 받아 모든 종목에 재사용한다.
  */
 export async function computeBetaData(
@@ -188,7 +190,11 @@ export async function computeBetaGridBatch(
   await Promise.all(
     stockCodes.map(async (code) => {
       try {
-        const adj = await fetchAdjDaily(normalizeCode(code), startDate, endDate);
+        const normalized = normalizeCode(code);
+        const [adj, market] = await Promise.all([
+          fetchAdjDaily(normalized, startDate, endDate),
+          getStockMarket(normalized).catch(() => ""),
+        ]);
         if (adj.length === 0) return;
         const rows = buildAlignedRows(marketSeries, adj, adj);
         const lastClose = adj[adj.length - 1]?.close ?? null;
@@ -205,7 +211,7 @@ export async function computeBetaGridBatch(
           stockCode: code,
           stockNameKr: "",
           stockNameEn: "",
-          market: "",
+          market,
           closePrice: lastClose !== null ? String(lastClose) : "",
           date: endDate,
         };

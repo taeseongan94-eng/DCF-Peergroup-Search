@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { computeBetaGridBatch } from "../beta-calc";
-import { resolveCorpCode, getCompanyInfo } from "../common/stock-code-resolver";
+import { resolveCorpCode, getCompanyInfo, getStockMarket } from "../common/stock-code-resolver";
 import { fetchFinancials, fetchStockQuantity, extractSharesInfo, extractNciAndPretax, extractDebtSummary } from "../opendart/client";
 import { REPORT_CODE } from "../opendart/constants";
 import { extractDebtFromXbrl } from "../opendart/xbrl-parser";
-import { fetchMarketData } from "../naver/client";
+import { fetchKrxPriceAsOf } from "../krx/client";
 import { handleApiError } from "../utils/error-handler";
 import { getCachedValuation } from "../cache/valuation-cache";
 import { getIndustryName } from "../opendart/ksic-codes";
@@ -65,11 +65,11 @@ export function registerValuationDataTool(server: McpServer): void {
     {
       title: "DCF 밸류에이션 데이터 조회",
       description: `DCF 밸류에이션에 필요한 핵심 데이터를 조회합니다.
-베타 + OpenDART(XBRL/재무/주식수) + 네이버금융(종가)을 병렬 호출합니다.
+베타 + OpenDART(XBRL/재무/주식수) + KRX 공식 Open API(종가)를 병렬 호출합니다.
 최대 10개 종목을 한번에 배치 조회할 수 있습니다.
 
-[베타 출처] 평가기준일이 캐시된 분기말(예: 2025-03/06/09/12 말)이면 KICPA 공식 캐시값을 사용하고,
-그 외 임의 영업일이면 네이버 주가+KOSPI 회귀로 직접 계산(compute_beta 로직)합니다.
+[베타 출처] 평가기준일이 캐시된 분기말(예: 2025-03/06/09/12 말)이면 사전 수집된 캐시값을 사용하고,
+그 외 임의 영업일이면 KRX 시세+KOSPI 회귀로 직접 계산(compute_beta 로직)합니다.
 
 [⚠️ 필수 입력 — 둘 다 없으면 호출이 거부됩니다]
 1. 종목코드 (stock_codes 또는 stock_code). 회사명만 있으면 먼저 search_stock 으로 종목코드를 조회하세요.
@@ -172,7 +172,7 @@ async function processCompany(
   const [financialResult, stockQtyResult, marketResult, companyResult] = await Promise.allSettled([
     fetchFinancials(corpCode, year, REPORT_CODE.annual, "CFS", apiKey),
     fetchStockQuantity(corpCode, year, REPORT_CODE.annual, apiKey),
-    fetchMarketData(code),
+    getStockMarket(code, apiKey).then((market) => fetchKrxPriceAsOf(code, market, valuationDate, 10)),
     getCompanyInfo(code, apiKey),
   ]);
 
@@ -194,8 +194,8 @@ async function processCompany(
     ? extractSharesInfo(stockQtyResult.value, year, REPORT_CODE.annual)
     : null;
 
-  // 종가 + 시가총액
-  const price = marketResult.status === "fulfilled" ? (marketResult.value.price ?? null) : null;
+  // 종가(KRX) + 시가총액
+  const price = marketResult.status === "fulfilled" ? (marketResult.value?.close ?? null) : null;
   const mcapTotal = shares && price ? shares.outstanding * price : null;
 
   // IBD (XBRL 우선 → Tier1/2 폴백) + NCI/세전이익

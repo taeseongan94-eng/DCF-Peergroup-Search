@@ -56,6 +56,33 @@ function resolveApiKey(apiKey?: string): string {
   return key;
 }
 
+// ─── 시장구분(KOSPI/KOSDAQ) 캐시 ───
+
+interface IndustryEntry {
+  name: string;
+  corpCode: string;
+  industryCode: string;
+  market: "KOSPI" | "KOSDAQ";
+  accMonth: string;
+  listedDate: string;
+}
+
+let marketMap: Map<string, "KOSPI" | "KOSDAQ"> | null = null;
+
+function initMarketMap(): Map<string, "KOSPI" | "KOSDAQ"> {
+  if (marketMap) return marketMap;
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const industryData = require("../../../data/company-industry.json") as Record<string, IndustryEntry>;
+  marketMap = new Map();
+  for (const [code, entry] of Object.entries(industryData)) {
+    if (entry.market === "KOSPI" || entry.market === "KOSDAQ") {
+      marketMap.set(code, entry.market);
+    }
+  }
+  return marketMap;
+}
+
 // ─── 공개 API ───
 
 /**
@@ -114,6 +141,23 @@ export async function getCompanyInfo(stockCode: string, apiKey?: string): Promis
   };
   companyInfoCache.set(stockCode, fallback);
   return fallback;
+}
+
+/**
+ * 종목코드 → KOSPI|KOSDAQ 시장구분.
+ * data/company-industry.json(KRX KIND 스크래핑) 우선, 없으면 DART corp_cls로 폴백.
+ * 코넥스/기타는 KRX 개별종목 시세 API가 지원하지 않으므로 에러.
+ */
+export async function getStockMarket(stockCode: string, apiKey?: string): Promise<"KOSPI" | "KOSDAQ"> {
+  const cached = initMarketMap().get(stockCode);
+  if (cached) return cached;
+
+  const info = await getCompanyInfo(stockCode, apiKey);
+  if (info.corp_cls === "Y") return "KOSPI";
+  if (info.corp_cls === "K") return "KOSDAQ";
+  throw new Error(
+    `종목코드 ${stockCode}의 시장구분(KOSPI/KOSDAQ)을 확인할 수 없습니다. (코넥스/기타 종목은 KRX 개별종목 시세 API에서 지원하지 않습니다)`
+  );
 }
 
 /**

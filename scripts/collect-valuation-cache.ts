@@ -1,13 +1,13 @@
 /**
  * 평가기준일별 밸류에이션 데이터 사전 수집 스크립트
  *
- * 사용법:
- *   OPENDART_API_KEY=xxx npx tsx scripts/collect-valuation-cache.ts
+ * 사용법: (.env.local에 OPENDART_API_KEY, KRX_AUTH_KEY를 설정해두면 자동으로 읽는다)
+ *   npx tsx scripts/collect-valuation-cache.ts
  *
  * 단계:
  *   1. DART 재무 데이터 수집 (IBD, NCI, 세전이익, 주식수) — 1회, 공유
- *   2. 종가 수집 (날짜별, 네이버금융)
- *   3. 베타 직접계산 (날짜별, 네이버 주가 + KOSPI 회귀 — Weekly-2Y/Monthly-5Y)
+ *   2. 종가 수집 (날짜별, KRX 공식 Open API)
+ *   3. 베타 직접계산 (날짜별, KRX 시세 + KOSPI 회귀 — Weekly-2Y/Monthly-5Y)
  *   4. 조립 → 날짜별 JSON 캐시 파일 생성
  *   5. 검증
  *
@@ -16,11 +16,11 @@
 
 import fs from "fs";
 import path from "path";
-import { resolveCorpCode } from "../src/services/common/stock-code-resolver";
+import { resolveCorpCode, getStockMarket } from "../src/services/common/stock-code-resolver";
 import { fetchFinancials, fetchStockQuantity, extractSharesInfo, extractNciAndPretax, extractDebtSummary } from "../src/services/opendart/client";
 import { extractDebtFromXbrl } from "../src/services/opendart/xbrl-parser";
 import { REPORT_CODE } from "../src/services/opendart/constants";
-import { fetchHistoricalPrices } from "../src/services/naver/client";
+import { fetchKrxPriceAsOf } from "../src/services/krx/client";
 import { computeBetaGridBatch } from "../src/services/beta-calc";
 import { getIndustryName } from "../src/services/opendart/ksic-codes";
 import type { DebtSummary } from "../src/services/opendart/types";
@@ -28,12 +28,12 @@ import type { DebtSummary } from "../src/services/opendart/types";
 // ─── 설정 ───
 
 // 2025 분기말 캐시는 이미 생성되어 있음(data/valuation-cache/2025*.json). 재생성/신규 분기
-// 추가 시에만 이 스크립트를 실행한다. 베타는 네이버+KOSPI 직접계산(KICPA 제거됨).
+// 추가 시에만 이 스크립트를 실행한다. 베타는 KRX+KOSPI 직접계산(KICPA 제거됨).
 const FISCAL_YEAR = "2025";
 const VALUATION_DATES = ["20250331", "20250630", "20250930", "20251231"];
 const DART_BATCH_SIZE = 3;
 const DART_DELAY_MS = 1000;    // 분당 ~180회 (안전)
-const NAVER_CONCURRENCY = 10;
+const PRICE_CONCURRENCY = 10;  // 실제 HTTP 호출은 krx/client.ts의 전역 스로틀이 직렬화함
 const BETA_BATCH_SIZE = 20;    // 베타 직접계산 배치 크기
 const SAVE_INTERVAL = 50;
 
@@ -195,30 +195,23 @@ async function collectPrices(
 
   if (toFetch.length === 0) return existing;
 
-  // 평가기준일 이전 14일간 조회 → 마지막 거래일 종가
-  const endDate = valuationDate;
-  const d = new Date(`${valuationDate.slice(0, 4)}-${valuationDate.slice(4, 6)}-${valuationDate.slice(6, 8)}`);
-  d.setDate(d.getDate() - 14);
-  const startDate = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-
   let done = 0;
 
-  for (let i = 0; i < toFetch.length; i += NAVER_CONCURRENCY) {
-    const batch = toFetch.slice(i, i + NAVER_CONCURRENCY);
+  for (let i = 0; i < toFetch.length; i += PRICE_CONCURRENCY) {
+    const batch = toFetch.slice(i, i + PRICE_CONCURRENCY);
 
     await Promise.all(batch.map(async (s) => {
       try {
-        const prices = await fetchHistoricalPrices(s.code, startDate, endDate);
-        // 평가기준일 이하에서 가장 가까운 거래일
-        const valid = prices.filter((p) => p.date <= valuationDate);
-        existing[s.code] = valid.length > 0 ? valid[valid.length - 1].close : null;
+        const market = await getStockMarket(s.code);
+        const result = await fetchKrxPriceAsOf(s.code, market, valuationDate, 14);
+        existing[s.code] = result?.close ?? null;
       } catch {
         existing[s.code] = null;
       }
       done++;
     }));
 
-    if (done % (SAVE_INTERVAL * NAVER_CONCURRENCY) === 0 || i + NAVER_CONCURRENCY >= toFetch.length) {
+    if (done % (SAVE_INTERVAL * PRICE_CONCURRENCY) === 0 || i + PRICE_CONCURRENCY >= toFetch.length) {
       saveJson(progressPath, existing);
       console.log(`[PRICE ${valuationDate}] ${done}/${toFetch.length}`);
     }

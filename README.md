@@ -1,6 +1,6 @@
 # KICPA Beta MCP Server
 
-한국공인회계사회(KICPA) CHECKExpert+ 베타계수 + OpenDART 재무 + 네이버 금융 시장데이터를 통합한 **DCF 밸류에이션 전용 웹 MCP 서버**입니다. Vercel에 배포하여 Claude for Excel, Claude Desktop, Claude Code 등 원격 MCP 클라이언트에서 바로 사용할 수 있습니다.
+한국거래소(KRX) 공식 Open API 시세 + OpenDART 재무·공시 + 네이버 금융(PER/PBR 등 KRX 미제공 지표)을 통합한 **DCF 밸류에이션 전용 웹 MCP 서버**입니다. Vercel에 배포하여 Claude for Excel, Claude Desktop, Claude Code 등 원격 MCP 클라이언트에서 바로 사용할 수 있습니다.
 
 핵심 설계 원칙:
 - **캐시 우선, 라이브 폴백**: 분기말 기준 베타·이자부부채·시가총액과 사업보고서 본문은 서버에 사전 수집되어 있어 즉시 응답. 캐시 miss 시에만 upstream API를 호출합니다.
@@ -27,7 +27,7 @@
 | `search_stock` | 종목명/종목코드로 한국 주식 종목 검색 | 네이버 금융 자동완성 |
 | `dart_get_company` | DART 기업 기본정보 조회 (대표자, 업종, 설립일 등) | OpenDART |
 | `dart_get_financials` | 분기/반기 보고서, 전체 재무제표, 개별(OFS) 조회 등 특수 케이스 | OpenDART |
-| `compute_beta` | **베타 직접 계산** — 네이버 수정주가 + KOSPI 지수 회귀로 Weekly-2Y/Monthly-5Y 산출. 과거 KICPA 공식값과 소수점 6자리 일치. (KICPA/KOSCOM 조회는 영구 장애로 제거됨) | 네이버 금융 |
+| `compute_beta` | **베타 직접 계산** — KRX 공식 종가 + KOSPI 지수 회귀로 Weekly-2Y/Monthly-5Y 산출. (KICPA/KOSCOM 조회는 영구 장애로 제거됨) | KRX Open API |
 | `naver_get_market_data` | 실시간 주가·시가총액·PER·PBR·컨센서스 목표가·동종업종 기업 | 네이버 금융 |
 
 👉 **Peer Group 분석 워크플로우**는 [`docs/PEER_GROUP_WORKFLOW.md`](docs/PEER_GROUP_WORKFLOW.md) 참조 — 에이전트가 언제 어떤 도구를 어떤 순서로 호출해야 하는지 정규 시퀀스가 정리되어 있습니다.
@@ -60,7 +60,7 @@
 ├── src/services/
 │   ├── tools/                     # MCP 도구 정의
 │   │   ├── peergroup-population.ts # peergroup_get_population (결정론적 모집단)
-│   │   ├── compute-beta.ts        # compute_beta (네이버+KOSPI 직접계산)
+│   │   ├── compute-beta.ts        # compute_beta (KRX+KOSPI 직접계산)
 │   │   ├── search-stock.ts        # search_stock
 │   │   ├── search-by-industry.ts  # search_by_industry
 │   │   ├── dart-company.ts        # dart_get_company
@@ -68,12 +68,13 @@
 │   │   ├── naver-market-data.ts   # naver_get_market_data
 │   │   ├── business-content.ts    # get_business_content
 │   │   └── valuation-data.ts      # valuation_get_data
-│   ├── beta-calc/                 # 네이버+KOSPI 회귀 베타 직접계산
+│   ├── beta-calc/                 # KRX+KOSPI 회귀 베타 직접계산 (anchors.ts가 앵커 날짜 계산)
+│   ├── krx/                       # KRX 공식 Open API 클라이언트 (일별 전종목 스냅샷 캐싱/스로틀)
 │   ├── opendart/                  # OpenDART 클라이언트 + XBRL IBD 파서 + 섹션 슬라이서
-│   ├── naver/                     # 네이버 금융 스크래퍼
+│   ├── naver/                     # 네이버 금융 (PER/PBR/배당/외인소진율/피어/컨센서스, 종목검색)
 │   ├── kicpa/types.ts             # 베타 결과 공유 타입 (KICPA 조회 경로는 제거됨)
 │   ├── cache/                     # valuation-cache / peer-snapshot 로더
-│   ├── common/                    # 종목코드 ↔ corp_code 리졸버
+│   ├── common/                    # 종목코드 ↔ corp_code / KOSPI·KOSDAQ 시장구분 리졸버
 │   └── utils/                     # 에러 핸들러, 포맷터
 ├── data/
 │   ├── corp-codes.json            # DART 기업코드 매핑
@@ -148,8 +149,9 @@ Vercel Dashboard → **Settings** → **Environment Variables**에서 아래 변
 | 변수명 | 값 |
 |--------|-----|
 | `OPENDART_API_KEY` | OpenDART API 키 ([발급](https://opendart.fss.or.kr)) |
+| `KRX_AUTH_KEY` | KRX Open API 인증키 ([발급](https://openapi.krx.co.kr), 무료. 코스피/코스닥 일별매매정보 + KOSPI 지수 3개 API를 각각 별도로 "이용신청"해야 함) |
 
-KICPA 베타계수는 서버가 KOSCOM 페이지에서 JSESSIONID 세션 쿠키를 자동 획득하므로 별도 인증 불필요하며, 네이버 금융도 인증이 필요 없습니다.
+네이버 금융은 인증이 필요 없습니다.
 
 ### 3. 배포 완료 후 MCP URL
 

@@ -1,56 +1,59 @@
-import axios from "axios";
 import type { PricePoint } from "./types";
+import { listWeeklyAnchors, listMonthlyAnchors } from "./anchors";
+import { PERIOD_SPECS, WEEKLY_ANCHOR_BUFFER, MONTHLY_ANCHOR_BUFFER } from "./constants";
+import { resolveTradingDay, getStockClose } from "../krx/client";
+import { getStockMarket } from "../common/stock-code-resolver";
 
 /**
- * 네이버에서 베타 계산용 일별 시계열을 가져온다.
- * - 수정주가/지수: api.finance.naver.com/siseJson.naver (단일 range 요청)
+ * KRX 공식 Open API에서 베타 계산용 시계열을 가져온다.
  *
- * Vercel 실측 확인: siseJson 종가는 수정주가이며, 이 수정수익률을 KOSPI 지수에
- * 회귀하면 KICPA 공식 베타(Weekly-2Y / Monthly-5Y)와 소수점 6자리까지 일치한다.
- * 지수 심볼은 "KOSPI" 가 유효(KS11 은 빈 응답).
+ * 네이버 siseJson과 달리 KRX는 "특정 날짜 하루치, 전종목"만 반환하고
+ * 기간범위 조회를 지원하지 않는다. 그래서 필요한 주간/월간 앵커 날짜만
+ * 미리 계산해(anchors.ts) 그 날짜들에 대해서만 조회하고, 휴장일이면
+ * resolveTradingDay가 하루씩 물러나며 유효 거래일을 확정한다.
+ *
+ * math.ts(buildAlignedRows/resampleWeekly/resampleMonthly/ols)는 PricePoint[]만
+ * 소비하는 source-agnostic 순수 함수라 이 파일의 구현 교체와 무관하게 그대로 쓴다.
  */
 
-const SISE_JSON_URL = "https://api.finance.naver.com/siseJson.naver";
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+function buildAnchorDates(endDate: string, startDate: string): string[] {
+  const weekly = listWeeklyAnchors(endDate, PERIOD_SPECS["Weekly-2Y"].keepRows + WEEKLY_ANCHOR_BUFFER);
+  const monthly = listMonthlyAnchors(endDate, PERIOD_SPECS["Monthly-5Y"].keepRows + MONTHLY_ANCHOR_BUFFER);
+  const merged = new Set([...weekly, ...monthly].filter((d) => d >= startDate && d <= endDate));
+  return [...merged].sort();
+}
 
 /**
- * siseJson 응답(텍스트 배열)을 파싱한다.
- * 형식: [['날짜','시가','고가','저가','종가','거래량','외국인소진율'], ["20260102", 120200, ...], ...]
- * 종가(5번째 컬럼)는 정수(주식) 또는 소수(지수)일 수 있으므로 부동소수까지 파싱.
+ * 개별종목 일별 종가 (앵커 날짜만, KRX 원본 종가 — 수정주가 아님).
+ * 앵커는 서로 독립적이므로 병렬로 처리한다 — 실제 동시 HTTP 요청 수는
+ * krx/client.ts의 세마포어가 제한하고, 같은 날짜로 수렴하는 경우 in-flight
+ * 캐시가 중복 호출을 막는다.
  */
-export function parseSiseJson(text: string): PricePoint[] {
-  const out: PricePoint[] = [];
-  const lines = text.split("\n");
-  for (const line of lines) {
-    const m = line.match(/\["(\d{8})",\s*([-\d.]+),\s*([-\d.]+),\s*([-\d.]+),\s*([-\d.]+)/);
-    if (!m) continue;
-    const close = parseFloat(m[5]);
-    if (!isFinite(close)) continue;
-    out.push({ date: m[1], close });
-  }
-  return out;
+export async function fetchAdjDaily(stockCode: string, startDate: string, endDate: string): Promise<PricePoint[]> {
+  const market = await getStockMarket(stockCode);
+  const anchors = buildAnchorDates(endDate, startDate);
+
+  const results = await Promise.all(
+    anchors.map(async (anchor) => {
+      const resolved = await resolveTradingDay(anchor, 7);
+      if (!resolved) return null;
+      const close = await getStockClose(resolved.date, market, stockCode);
+      return close !== null ? { date: resolved.date, close } : null;
+    })
+  );
+
+  const dedup = new Map<string, number>();
+  for (const r of results) if (r) dedup.set(r.date, r.close);
+  return [...dedup.entries()].map(([date, close]) => ({ date, close })).sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
-/** siseJson 단일 호출 (주식 종목코드 또는 지수 심볼) */
-export async function fetchSiseJson(
-  symbol: string,
-  startDate: string,
-  endDate: string
-): Promise<PricePoint[]> {
-  const response = await axios.get<string>(SISE_JSON_URL, {
-    params: { symbol, requestType: 1, startTime: startDate, endTime: endDate, timeframe: "day" },
-    headers: { "User-Agent": UA },
-    timeout: 15000,
-  });
-  return parseSiseJson(response.data).sort((a, b) => (a.date < b.date ? -1 : 1));
-}
+/** KOSPI 지수 일별 종가 (앵커 날짜만, 병렬 처리). symbol 파라미터는 호환용으로 남기되 무시한다(KRX는 "코스피" 고정). */
+export async function fetchKospiDaily(startDate: string, endDate: string, _symbol?: string): Promise<PricePoint[]> {
+  const anchors = buildAnchorDates(endDate, startDate);
 
-/** 수정주가(가정) 일별 종가 */
-export function fetchAdjDaily(stockCode: string, startDate: string, endDate: string) {
-  return fetchSiseJson(stockCode, startDate, endDate);
-}
+  const results = await Promise.all(anchors.map((anchor) => resolveTradingDay(anchor, 7)));
 
-/** KOSPI 지수 일별 종가 (기본 심볼 "KOSPI") */
-export function fetchKospiDaily(startDate: string, endDate: string, symbol = "KOSPI") {
-  return fetchSiseJson(symbol, startDate, endDate);
+  const dedup = new Map<string, number>();
+  for (const r of results) if (r) dedup.set(r.date, r.close);
+  return [...dedup.entries()].map(([date, close]) => ({ date, close })).sort((a, b) => (a.date < b.date ? -1 : 1));
 }

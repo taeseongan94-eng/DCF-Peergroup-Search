@@ -1,5 +1,5 @@
 import type { AlignedRow, OlsResult, PricePoint } from "./types";
-import { EVENT_THRESHOLD, FACTOR_DECIMALS, RETURN_DECIMALS } from "./constants";
+import { EVENT_THRESHOLD, FACTOR_DECIMALS, RETURN_DECIMALS, OUTLIER_RETURN_THRESHOLD } from "./constants";
 
 /**
  * 베타 계산의 순수 함수 모음. 네트워크 의존 없음 → npx tsx 로 단위 검증 가능.
@@ -198,6 +198,9 @@ export function computeReturns(
     const isEvent = Math.abs(factorPct[i]) > threshold; // i=0 → NaN>thr → false
     const sr = round(isEvent ? precisePct[i] : rawPct[i], RETURN_DECIMALS);
     if (!isFinite(sr)) continue; // 첫 행 등 NaN 제거
+    // KRX 종가는 수정주가가 아니므로 액면분할·병합 등으로 하루 새 수익률이
+    // 상하한가(±30%)로는 설명 안 되게 튀는 관측치는 이상치로 간주해 제외한다.
+    if (Math.abs(sr) > OUTLIER_RETURN_THRESHOLD) continue;
     const mr = round(marketPct[i], RETURN_DECIMALS);
     stockReturn.push(sr);
     marketReturn.push(mr);

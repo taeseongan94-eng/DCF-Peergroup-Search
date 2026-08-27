@@ -11,17 +11,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - No test runner configured; ad-hoc scripts live under `scripts/` and are run with `npx tsx scripts/<file>.ts`
 
 ## Architecture
-Web-based MCP server (Next.js 15 + `mcp-handler`) deployed to Vercel serverless. Exposes financial data tools that aggregate three upstream sources: KICPA/KOSCOM CHECKExpert+ (beta coefficients), OpenDART (corporate filings/financials), and Naver Finance (market data).
+Web-based MCP server (Next.js 15 + `mcp-handler`) deployed to Vercel serverless. Exposes financial data tools that aggregate three upstream sources: KRX Open API (official closing prices + beta-calc time series), OpenDART (corporate filings/financials/business content), and Naver Finance (PER/PBR/dividend yield/foreign-ownership ratio/peer comps/consensus target price/stock search — KRX doesn't provide these).
 
 Request flow:
 1. `app/api/[transport]/route.ts` — single MCP handler that registers all tools.
 2. `src/services/tools/*.ts` — one file per MCP tool; each defines a zod input schema and delegates to a service client.
-3. `src/services/{kicpa,opendart,naver}/` — upstream API clients. The KICPA client auto-acquires a JSESSIONID from KOSCOM, so no credentials are needed for beta lookups.
-4. `src/services/common/` — shared resolvers, notably the stock-code → DART `corp_code` mapping backed by `data/corp-codes.json`.
+3. `src/services/{krx,opendart,naver}/` — upstream API clients. `krx/client.ts` throttles (concurrency-limited semaphore) and caches KRX's per-day, whole-market snapshots keyed by (date) / (date, market), since the API has no per-symbol or date-range query — see the "KRX Open API" note below before touching this file.
+4. `src/services/common/` — shared resolvers: stock-code → DART `corp_code` (`data/corp-codes.json`) and stock-code → KOSPI/KOSDAQ market (`getStockMarket`, backed by `data/company-industry.json` with a DART `corp_cls` fallback).
 5. `src/services/utils/` — shared error handling and response formatting.
 
+### KRX Open API — read before editing `krx/` or `beta-calc/data-source.ts`
+KRX's Open API (`data-dbg.krx.co.kr/svc/apis`) only returns "one date, whole market" snapshots — no per-symbol or date-range queries, and closing prices are **not** split/dividend-adjusted (unlike Naver's old `siseJson`, which was). Consequences baked into the current design:
+- `beta-calc/anchors.ts` precomputes the exact weekly/monthly calendar dates needed (`math.ts`'s resample logic is unchanged and still source-agnostic — it only consumes `PricePoint[]={date,close}`), and `krx/client.ts`'s `resolveTradingDay` walks backward up to 7 days using the KOSPI index as a "is this a trading day" oracle.
+- Anchor dates are fetched in parallel (`Promise.all`) — a sequential `for...await` loop here silently reintroduces multi-minute latency, since each date is an independent round trip.
+- Because prices aren't adjusted, a stock's raw return can spike past what a ±30% daily limit could ever produce whenever a split/merger occurred in the lookback window; `math.ts`'s `computeReturns` drops any return exceeding `OUTLIER_RETURN_THRESHOLD` (0.5) rather than feeding it into the regression. This is a safety net, not a real adjustment-factor correction — full split-ratio backfilling is out of scope for now.
+- Vercel is on the Hobby plan (`maxDuration: 60`, not adjustable): a cold, uncached multi-stock batch can approach that limit. `peergroup_get_population` → `valuation_get_data`'s cached-quarter-end path avoids this in normal use; only uncached arbitrary valuation dates hit the slow path.
+
 Key tools:
-- `valuation_get_data` is the composite tool — it fans out to KICPA + OpenDART + Naver in a single call, so changes to any upstream client must preserve its expected output shape.
+- `valuation_get_data` is the composite tool — it fans out to KRX (beta time series + closing price) and OpenDART (financials/shares) in a single call, so changes to any upstream client must preserve its expected output shape.
 - `peergroup_get_population` is the deterministic peer-population tool — it reads only the immutable quarter-end snapshots in `data/peer-snapshot/*.json.gz` (business overview + segment revenue + exclusion flags per company) and never falls back to live APIs. Same (valuation_date, industry_code) input must always return the same population; the response includes a `populationHash` for audit reproducibility. Never add a live fallback to this tool.
 
 Caches and builders (all under `data/`, loaded via `process.cwd()`-relative paths — any new cache file must also be added to `outputFileTracingIncludes` in `next.config.ts` or it will be silently missing on Vercel):
@@ -37,7 +44,7 @@ Peer-group agent workflow (which tool at which step) is defined in `docs/PEER_GR
 
 ## Environment
 - `OPENDART_API_KEY` — required for `dart_*` and `valuation_get_data` tools
-- KICPA: no key (session cookie auto-fetched)
+- `KRX_AUTH_KEY` — required for `compute_beta`, `valuation_get_data`, and `collect-valuation-cache.ts` (KRX Open API, free but requires per-endpoint approval at openapi.krx.co.kr)
 - Naver: no key
 
 ## Conventions
