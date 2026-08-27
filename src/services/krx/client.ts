@@ -1,6 +1,6 @@
 import axios from "axios";
 import https from "https";
-import type { KrxApiResponse, KrxIndexRow, KrxMarket, KrxStockRow } from "./types";
+import type { KrxApiResponse, KrxIndexRow, KrxMarket, KrxStockRow, KrxStockBaseInfoRow } from "./types";
 
 /**
  * 한국거래소(KRX) 공식 Open API 클라이언트.
@@ -118,6 +118,7 @@ async function throttled<T>(fn: () => Promise<T>): Promise<T> {
 // (병렬화된 앵커 순회에서 흔히 발생) 중복 HTTP 요청을 내지 않고 하나를 공유한다.
 const kospiIndexCache = new Map<string, Promise<KrxIndexRow[]>>();
 const stockMarketCache = new Map<string, Promise<KrxStockRow[]>>();
+const stockBaseInfoCache = new Map<string, Promise<KrxStockBaseInfoRow[]>>();
 
 function fetchKospiIndexRaw(basDd: string, apiKey?: string): Promise<KrxIndexRow[]> {
   const cached = kospiIndexCache.get(basDd);
@@ -154,6 +155,26 @@ function fetchMarketStocksRaw(basDd: string, market: KrxMarket, apiKey?: string)
   });
   stockMarketCache.set(cacheKey, promise);
   promise.catch(() => stockMarketCache.delete(cacheKey));
+  return promise;
+}
+
+function fetchStockBaseInfoRaw(basDd: string, market: KrxMarket, apiKey?: string): Promise<KrxStockBaseInfoRow[]> {
+  const cacheKey = `${basDd}:${market}`;
+  const cached = stockBaseInfoCache.get(cacheKey);
+  if (cached) return cached;
+
+  const endpoint = market === "KOSPI" ? "stk_isu_base_info" : "ksq_isu_base_info";
+  const promise = throttled(async () => {
+    const res = await axios.get<KrxApiResponse<KrxStockBaseInfoRow>>(`${KRX_API_BASE}/sto/${endpoint}`, {
+      params: { basDd },
+      headers: { AUTH_KEY: resolveApiKey(apiKey) },
+      httpsAgent,
+      timeout: 15000,
+    });
+    return res.data.OutBlock_1 ?? [];
+  });
+  stockBaseInfoCache.set(cacheKey, promise);
+  promise.catch(() => stockBaseInfoCache.delete(cacheKey));
   return promise;
 }
 
@@ -219,6 +240,31 @@ export async function fetchKrxPriceAsOf(
     if (!isWeekend(candidate)) {
       const close = await getStockClose(candidate, market, stockCode, apiKey);
       if (close !== null) return { date: candidate, close };
+    }
+    candidate = addDays(candidate, -1);
+  }
+  return null;
+}
+
+/**
+ * 종목의 액면가(원). 종목기본정보는 매일 갱신되는 시세가 아니라 현재 상태
+ * 스냅샷이므로, 기준일 없이 "오늘"부터 최대 maxBackoffDays일 역행하며 조회한다.
+ */
+export async function getParValue(
+  stockCode: string,
+  market: KrxMarket,
+  maxBackoffDays = 10,
+  apiKey?: string
+): Promise<number | null> {
+  let candidate = toBasDd(new Date());
+  for (let i = 0; i <= maxBackoffDays; i++) {
+    if (!isWeekend(candidate)) {
+      const rows = await fetchStockBaseInfoRaw(candidate, market, apiKey);
+      const row = rows.find((r) => r.ISU_SRT_CD === stockCode);
+      if (row) {
+        const parVal = parseInt(row.PARVAL, 10);
+        return isNaN(parVal) ? null : parVal;
+      }
     }
     candidate = addDays(candidate, -1);
   }

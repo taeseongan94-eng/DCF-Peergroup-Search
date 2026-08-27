@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { resolveCorpCode, getCompanyInfo } from "../common/stock-code-resolver";
+import { resolveCorpCode, getCompanyInfo, getStockMarket } from "../common/stock-code-resolver";
 import { fetchFinancials, fetchAuditOpinion, extractAuditOpinion, extractNetAssets } from "../opendart/client";
 import { REPORT_CODE } from "../opendart/constants";
+import { getParValue } from "../krx/client";
 import { handleApiError } from "../utils/error-handler";
 
 const AuditReviewInputSchema = z.object({
@@ -29,6 +30,7 @@ interface AuditReviewResult {
     settlementDate: string | null;
   } | null;
   netAssets: number | null;
+  parValue: number | null;
   error?: string;
 }
 
@@ -43,10 +45,12 @@ export function registerAuditReviewTool(server: McpServer): void {
 [반환 필드]
 - auditOpinion: { auditor(감사인), opinion(감사의견, 예: "적정의견"), emphasisMatter(강조사항), coreAuditMatter(핵심감사사항), settlementDate(결산일) }
 - netAssets: 순자산(자본총계), 원 단위 정수
+- parValue: 액면가(원)
 
 [출처]
 - 감사의견: OpenDART 회계감사인의 명칭 및 감사의견 API (accnutAdtorNmNdAdtOpinion)
 - 순자산: OpenDART 전체 재무제표(fnlttSinglAcntAll)의 재무상태표 "자본총계" 계정 — 연결(CFS) 우선, 없으면 별도(OFS) 자동 폴백
+- 액면가: KRX 공식 Open API 종목기본정보(PARVAL) — 현재 시점 기준 (사업연도와 무관하게 최신값)
 
 [파라미터]
 - stock_codes: 종목코드 6자리 (단일 문자열 또는 최대 10개 배열)
@@ -85,10 +89,11 @@ async function processCompany(
   try {
     const corpCode = await resolveCorpCode(code);
 
-    const [auditResult, financialResult, companyResult] = await Promise.allSettled([
+    const [auditResult, financialResult, companyResult, parValueResult] = await Promise.allSettled([
       fetchAuditOpinion(corpCode, year, reportCode, apiKey),
       fetchFinancials(corpCode, year, reportCode, "CFS", apiKey),
       getCompanyInfo(code, apiKey),
+      getStockMarket(code, apiKey).then((market) => getParValue(code, market)),
     ]);
 
     const name = companyResult.status === "fulfilled" ? companyResult.value.corp_name : null;
@@ -100,6 +105,8 @@ async function processCompany(
     const netAssets = financialResult.status === "fulfilled"
       ? extractNetAssets(financialResult.value)
       : null;
+
+    const parValue = parValueResult.status === "fulfilled" ? parValueResult.value : null;
 
     return {
       code,
@@ -114,6 +121,7 @@ async function processCompany(
           }
         : null,
       netAssets,
+      parValue,
     };
   } catch (error) {
     return {
@@ -121,6 +129,7 @@ async function processCompany(
       name: null,
       auditOpinion: null,
       netAssets: null,
+      parValue: null,
       error: error instanceof Error ? error.message : String(error),
     };
   }

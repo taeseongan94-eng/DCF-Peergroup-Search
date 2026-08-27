@@ -37,6 +37,25 @@ export interface KrxStockRow {
   LIST_SHRS: string;
 }
 
+/**
+ * sto/stk_isu_base_info, sto/ksq_isu_base_info 응답 레코드 (유가증권/코스닥 종목기본정보).
+ * 주의: 여기서는 ISU_CD가 12자리 표준코드다 (일별매매정보 KrxStockRow의 ISU_CD는 6자리 단축코드라 의미가 다름) — 종목 매칭엔 ISU_SRT_CD(6자리)를 쓴다.
+ */
+export interface KrxStockBaseInfoRow {
+  ISU_CD: string; // 표준코드 12자리 (예: "KR7005930003")
+  ISU_SRT_CD: string; // 단축코드 6자리
+  ISU_NM: string;
+  ISU_ABBRV: string;
+  ISU_ENG_NM: string;
+  LIST_DD: string; // 상장일
+  MKT_TP_NM: string; // "KOSPI" | "KOSDAQ"
+  SECUGRP_NM: string;
+  SECT_TP_NM: string;
+  KIND_STKCERT_TP_NM: string;
+  PARVAL: string; // 액면가
+  LIST_SHRS: string; // 상장주식수
+}
+
 export interface KrxApiResponse<T> {
   OutBlock_1: T[];
 }
