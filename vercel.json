@@ -1,8 +1,9 @@
 {
   "regions": ["icn1"],
+  "fluid": true,
   "functions": {
     "app/api/[transport]/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 120
     }
   }
 }

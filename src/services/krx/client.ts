@@ -1,4 +1,5 @@
 import axios from "axios";
+import https from "https";
 import type { KrxApiResponse, KrxIndexRow, KrxMarket, KrxStockRow } from "./types";
 
 /**
@@ -14,9 +15,22 @@ import type { KrxApiResponse, KrxIndexRow, KrxMarket, KrxStockRow } from "./type
 
 const KRX_API_BASE = "https://data-dbg.krx.co.kr/svc/apis";
 const KOSPI_TOTAL_INDEX_NAME = "코스피";
-/** 동시 in-flight 요청 수 제한. "초당 N회"로 응답을 기다린 뒤 쉬는 방식은
- * 요청 latency가 그대로 누적돼 느려지므로, 동시성 제한(세마포어)으로 파이프라인화한다. */
-const MAX_CONCURRENT_REQUESTS = 4;
+/**
+ * 요청 "시작" 속도(토큰 버킷)와 동시 in-flight 상한을 분리해서 관리한다.
+ * - 동시성만 세마포어로 제한하면(응답을 기다렸다 다음 요청) latency가 그대로
+ *   누적돼 느려지고, 반대로 latency와 무관하게 계속 밀어넣으면 KRX 앞단
+ *   WAF(Akamai)가 순간 요청 폭주로 판단해 403을 낸다(실측: 동시/속도 10↑에서 차단 시작).
+ * - "초당 RATE_PER_SECOND개 시작, 동시 최대 MAX_CONCURRENT개 in-flight"로
+ *   두 축을 같이 제한하면 latency에 관계없이 파이프라인화하면서도 순간 폭주를 피한다.
+ * - 8은 403 재현 없이 안전한 값. vercel.json의 maxDuration을 120초(Fluid Compute)로
+ *   늘려뒀으므로 굳이 이 값을 더 밀어붙여 차단 위험을 감수할 필요는 없다.
+ */
+const RATE_PER_SECOND = 8;
+const MAX_CONCURRENT_REQUESTS = 8;
+
+// TCP/TLS 핸드셰이크를 요청마다 새로 맺지 않도록 연결을 재사용한다 — 앵커별로
+// 수백 번씩 나가는 요청의 latency를 줄이는 핵심 요인.
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENT_REQUESTS });
 
 function resolveApiKey(apiKey?: string): string {
   const key = apiKey || process.env.KRX_AUTH_KEY;
@@ -44,33 +58,43 @@ function isWeekend(basDd: string): boolean {
   return dow === 0 || dow === 6;
 }
 
-// ── 전역 스로틀: 동시 요청 수를 제한하는 세마포어 ──────────────────────────
+// ── 전역 스로틀: 토큰 버킷(시작 속도) + 세마포어(동시 in-flight 상한) ──────
 let activeRequests = 0;
-const waitQueue: Array<() => void> = [];
+let tokens = RATE_PER_SECOND;
+let lastRefill = Date.now();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function refillTokens(): void {
+  const now = Date.now();
+  const elapsed = (now - lastRefill) / 1000;
+  tokens = Math.min(RATE_PER_SECOND, tokens + elapsed * RATE_PER_SECOND);
+  lastRefill = now;
+}
+
 async function acquireSlot(): Promise<void> {
-  if (activeRequests < MAX_CONCURRENT_REQUESTS) {
-    activeRequests++;
-    return;
+  while (true) {
+    refillTokens();
+    if (tokens >= 1 && activeRequests < MAX_CONCURRENT_REQUESTS) {
+      tokens -= 1;
+      activeRequests++;
+      return;
+    }
+    await sleep(15); // 짧은 폴링 — 토큰/슬롯 여유가 생기는지 재확인
   }
-  await new Promise<void>((resolve) => waitQueue.push(resolve));
-  activeRequests++;
 }
 
 function releaseSlot(): void {
   activeRequests--;
-  const next = waitQueue.shift();
-  if (next) next();
 }
 
 function isRetryableError(err: unknown): boolean {
   if (!axios.isAxiosError(err)) return false;
   if (!err.response) return true; // 네트워크 오류/타임아웃
-  return err.response.status === 429 || err.response.status >= 500;
+  // 403은 KRX 앞단 WAF(Akamai)가 순간 요청 폭주를 일시 차단할 때도 발생한다.
+  return err.response.status === 403 || err.response.status === 429 || err.response.status >= 500;
 }
 
 /** 동시성 제한 + 일시적 오류(429/5xx/네트워크) 1회 재시도 */
@@ -81,7 +105,7 @@ async function throttled<T>(fn: () => Promise<T>): Promise<T> {
       return await fn();
     } catch (err) {
       if (!isRetryableError(err)) throw err;
-      await sleep(300);
+      await sleep(800);
       return await fn();
     }
   } finally {
@@ -103,6 +127,7 @@ function fetchKospiIndexRaw(basDd: string, apiKey?: string): Promise<KrxIndexRow
     const res = await axios.get<KrxApiResponse<KrxIndexRow>>(`${KRX_API_BASE}/idx/kospi_dd_trd`, {
       params: { basDd },
       headers: { AUTH_KEY: resolveApiKey(apiKey) },
+      httpsAgent,
       timeout: 15000,
     });
     return res.data.OutBlock_1 ?? [];
@@ -122,6 +147,7 @@ function fetchMarketStocksRaw(basDd: string, market: KrxMarket, apiKey?: string)
     const res = await axios.get<KrxApiResponse<KrxStockRow>>(`${KRX_API_BASE}/sto/${endpoint}`, {
       params: { basDd },
       headers: { AUTH_KEY: resolveApiKey(apiKey) },
+      httpsAgent,
       timeout: 15000,
     });
     return res.data.OutBlock_1 ?? [];
